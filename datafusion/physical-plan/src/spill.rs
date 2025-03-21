@@ -49,7 +49,7 @@ pub(crate) fn read_spill_as_stream(
     let mut builder = RecordBatchReceiverStream::builder(schema, buffer);
     let sender = builder.tx();
 
-    builder.spawn_blocking(move || read_spill(sender, path.path()));
+    builder.spawn_blocking(move || read_spill_mmap(sender, path.path()));
 
     Ok(builder.build())
 }
@@ -79,6 +79,19 @@ pub(crate) fn spill_record_batches(
 fn read_spill(sender: Sender<Result<RecordBatch>>, path: &Path) -> Result<()> {
     let file = BufReader::new(File::open(path)?);
     let reader = StreamReader::try_new(file, None)?;
+    for batch in reader {
+        sender
+            .blocking_send(batch.map_err(Into::into))
+            .map_err(|e| exec_datafusion_err!("{e}"))?;
+    }
+    Ok(())
+}
+
+fn read_spill_mmap(sender: Sender<Result<RecordBatch>>, path: &Path) -> Result<()> {
+    let file = File::open(path)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    let bytes = mmap.as_ref();
+    let reader = StreamReader::try_new(bytes, None)?;
     for batch in reader {
         sender
             .blocking_send(batch.map_err(Into::into))
